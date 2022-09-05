@@ -16,14 +16,15 @@ package client_test
 
 import (
 	"flag"
-	"github.com/datastax/go-cassandra-native-protocol/client"
-	"github.com/datastax/go-cassandra-native-protocol/primitive"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"math"
 	"os"
 	"sync/atomic"
 	"testing"
+
+	"github.com/datastax/go-cassandra-native-protocol/client"
+	"github.com/datastax/go-cassandra-native-protocol/primitive"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 var remoteAvailable bool
@@ -83,7 +84,7 @@ func createStreamIdGenerators() {
 			max = math.MaxInt16
 		}
 		for {
-			current := counter
+			current := atomic.LoadUint32(&counter)
 			next := current + 1
 			if next > max {
 				next = 1

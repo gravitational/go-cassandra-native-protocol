@@ -603,12 +603,8 @@ func (c *CqlClientConnection) Close() (err error) {
 		log.Debug().Msgf("%v: closing", c)
 		c.cancel()
 		err = c.conn.Close()
-		outgoing := c.outgoing
-		events := c.events
-		c.outgoing = nil
-		c.events = nil
-		close(outgoing)
-		close(events)
+		close(c.outgoing)
+		close(c.events)
 		c.inFlightHandler.close()
 		c.waitGroup.Wait()
 		if err != nil {

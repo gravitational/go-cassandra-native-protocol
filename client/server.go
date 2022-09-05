@@ -152,6 +152,10 @@ func (server *CqlServer) transitionState(old int32, new int32) bool {
 	return atomic.CompareAndSwapInt32(&server.state, old, new)
 }
 
+func (server *CqlServer) Listener() net.Listener {
+	return server.listener
+}
+
 // Start starts the server and binds to its listen address. This method must be called before calling Accept.
 // Set ctx to context.Background if no parent context exists.
 func (server *CqlServer) Start(ctx context.Context) (err error) {
@@ -776,12 +780,8 @@ func (c *CqlServerConnection) Close() (err error) {
 		log.Debug().Msgf("%v: closing", c)
 		c.cancel()
 		err = c.conn.Close()
-		incoming := c.incoming
-		outgoing := c.outgoing
-		c.incoming = nil
-		c.outgoing = nil
-		close(incoming)
-		close(outgoing)
+		close(c.incoming)
+		close(c.outgoing)
 		c.waitGroup.Wait()
 		c.onClose(c)
 		if err != nil {
