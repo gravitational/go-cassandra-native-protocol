@@ -110,7 +110,7 @@ type CqlServer struct {
 
 	ctx                context.Context
 	cancel             context.CancelFunc
-	listener           net.Listener
+	Listener           net.Listener
 	connectionsHandler *clientConnectionHandler
 	waitGroup          *sync.WaitGroup
 	state              int32
@@ -152,10 +152,6 @@ func (server *CqlServer) transitionState(old int32, new int32) bool {
 	return atomic.CompareAndSwapInt32(&server.state, old, new)
 }
 
-func (server *CqlServer) Listener() net.Listener {
-	return server.listener
-}
-
 // Start starts the server and binds to its listen address. This method must be called before calling Accept.
 // Set ctx to context.Background if no parent context exists.
 func (server *CqlServer) Start(ctx context.Context) (err error) {
@@ -168,13 +164,15 @@ func (server *CqlServer) Start(ctx context.Context) (err error) {
 		if err != nil {
 			return fmt.Errorf("%v: start failed: %w", server, err)
 		}
-		if server.TLSConfig != nil {
-			server.listener, err = tls.Listen("tcp", server.ListenAddress, server.TLSConfig)
-		} else {
-			server.listener, err = net.Listen("tcp", server.ListenAddress)
-		}
-		if err != nil {
-			return fmt.Errorf("%v: start failed: %w", server, err)
+		if server.Listener == nil {
+			if server.TLSConfig != nil {
+				server.Listener, err = tls.Listen("tcp", server.ListenAddress, server.TLSConfig)
+			} else {
+				server.Listener, err = net.Listen("tcp", server.ListenAddress)
+			}
+			if err != nil {
+				return fmt.Errorf("%v: start failed: %w", server, err)
+			}
 		}
 		server.ctx, server.cancel = context.WithCancel(ctx)
 		server.waitGroup = &sync.WaitGroup{}
@@ -190,7 +188,7 @@ func (server *CqlServer) Start(ctx context.Context) (err error) {
 func (server *CqlServer) Close() (err error) {
 	if server.transitionState(ServerStateRunning, ServerStateClosed) {
 		log.Debug().Msgf("%v: closing", server)
-		err = server.listener.Close()
+		err = server.Listener.Close()
 		server.connectionsHandler.close()
 		server.cancel()
 		server.waitGroup.Wait()
@@ -218,7 +216,7 @@ func (server *CqlServer) acceptLoop() {
 	go func() {
 		abort := false
 		for server.IsRunning() {
-			if conn, err := server.listener.Accept(); err != nil {
+			if conn, err := server.Listener.Accept(); err != nil {
 				if !server.IsClosed() {
 					log.Error().Err(err).Msgf("%v: error accepting client connections, closing server", server)
 					abort = true
