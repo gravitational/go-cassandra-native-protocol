@@ -25,7 +25,8 @@ func ReadStringMultiMap(source io.Reader) (decoded map[string][]string, err erro
 	if length, err := ReadShort(source); err != nil {
 		return nil, fmt.Errorf("cannot read [string multimap] length: %w", err)
 	} else {
-		decoded := make(map[string][]string, length)
+
+		decoded = make(map[string][]string)
 		for i := uint16(0); i < length; i++ {
 			if key, err := ReadString(source); err != nil {
 				return nil, fmt.Errorf("cannot read [string multimap] entry %d key: %w", i, err)

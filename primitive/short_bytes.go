@@ -15,6 +15,7 @@
 package primitive
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -30,11 +31,11 @@ func ReadShortBytes(source io.Reader) ([]byte, error) {
 	} else if length == 0 {
 		return []byte{}, nil
 	} else {
-		decoded := make([]byte, length)
-		if _, err := io.ReadFull(source, decoded); err != nil {
+		var out bytes.Buffer
+		if _, err := io.CopyN(&out, source, int64(length)); err != nil {
 			return nil, fmt.Errorf("cannot read [short bytes] content: %w", err)
 		}
-		return decoded, nil
+		return out.Bytes(), nil
 	}
 }
 

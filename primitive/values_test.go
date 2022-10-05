@@ -93,7 +93,7 @@ func TestReadValue(t *testing.T) {
 					},
 					nil,
 					fmt.Errorf("cannot read [value] content: %w",
-						errors.New("unexpected EOF")),
+						errors.New("EOF")),
 				},
 			}
 			for _, tt := range tests {
@@ -175,7 +175,7 @@ func TestReadValue(t *testing.T) {
 					},
 					nil,
 					fmt.Errorf("cannot read [value] content: %w",
-						errors.New("unexpected EOF")),
+						errors.New("EOF")),
 				},
 			}
 			for _, tt := range tests {

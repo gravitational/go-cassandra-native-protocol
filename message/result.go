@@ -504,14 +504,28 @@ func (c *resultCodec) Decode(source io.Reader, version primitive.ProtocolVersion
 		if rowsCount, err = primitive.ReadInt(source); err != nil {
 			return nil, fmt.Errorf("cannot read RESULT Rows data length: %w", err)
 		}
-		rows.Data = make(RowSet, rowsCount)
+		if rowsCount < 0 {
+			return nil, fmt.Errorf("RESULT Rows data length cannot be negative: %d", rowsCount)
+		}
+		if rows.Metadata.ColumnCount < 0 {
+			return nil, fmt.Errorf("RESULT Rows metadata column count cannot be negative: %d", rows.Metadata.ColumnCount)
+		}
+
+		rows.Data = make(RowSet, 0)
+		if rowsCount == 0 || rows.Metadata.ColumnCount == 0 {
+			return rows, nil
+		}
+
 		for i := 0; i < int(rowsCount); i++ {
-			rows.Data[i] = make(Row, rows.Metadata.ColumnCount)
+			var row Row
 			for j := 0; j < int(rows.Metadata.ColumnCount); j++ {
-				if rows.Data[i][j], err = primitive.ReadBytes(source); err != nil {
+				buff, err := primitive.ReadBytes(source)
+				if err != nil {
 					return nil, fmt.Errorf("cannot read RESULT Rows data row %d col %d: %w", i, j, err)
 				}
+				row = append(row, buff)
 			}
+			rows.Data = append(rows.Data, row)
 		}
 		return rows, nil
 	default:

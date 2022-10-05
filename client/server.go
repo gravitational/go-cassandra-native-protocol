@@ -30,6 +30,7 @@ import (
 	"github.com/datastax/go-cassandra-native-protocol/message"
 	"github.com/datastax/go-cassandra-native-protocol/segment"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/datastax/go-cassandra-native-protocol/frame"
@@ -798,4 +799,8 @@ func (c *CqlServerConnection) abort() {
 	if err := c.Close(); err != nil {
 		log.Error().Err(err).Msgf("%v: error closing", c)
 	}
+}
+
+func init() {
+	log.Logger = zerolog.New(io.Discard).Level(zerolog.Disabled)
 }

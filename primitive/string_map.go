@@ -25,7 +25,7 @@ func ReadStringMap(source io.Reader) (map[string]string, error) {
 	if length, err := ReadShort(source); err != nil {
 		return nil, fmt.Errorf("cannot read [string map] length: %w", err)
 	} else {
-		decoded := make(map[string]string, length)
+		decoded := make(map[string]string)
 		for i := uint16(0); i < length; i++ {
 			if key, err := ReadString(source); err != nil {
 				return nil, fmt.Errorf("cannot read [string map] entry %d key: %w", i, err)

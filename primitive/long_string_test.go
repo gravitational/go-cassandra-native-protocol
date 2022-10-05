@@ -53,7 +53,7 @@ func TestReadLongString(t *testing.T) {
 			[]byte{0, 0, 0, 5, h, e, l, l},
 			"",
 			[]byte{},
-			fmt.Errorf("cannot read [long string] content: %w", errors.New("unexpected EOF")),
+			fmt.Errorf("cannot read [long string] content: %w", errors.New("EOF")),
 		},
 	}
 	for _, tt := range tests {

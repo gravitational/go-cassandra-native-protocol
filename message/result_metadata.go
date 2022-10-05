@@ -157,11 +157,13 @@ func decodeVariablesMetadata(source io.Reader, version primitive.ProtocolVersion
 			return nil, fmt.Errorf("cannot read RESULT Prepared variables metadata pk indices length: %w", err)
 		}
 		if pkCount > 0 {
-			metadata.PkIndices = make([]uint16, pkCount)
+			metadata.PkIndices = make([]uint16, 0)
 			for i := 0; i < int(pkCount); i++ {
-				if metadata.PkIndices[i], err = primitive.ReadShort(source); err != nil {
+				val, err := primitive.ReadShort(source)
+				if err != nil {
 					return nil, fmt.Errorf("cannot read RESULT Prepared variables metadata pk index element %d: %w", i, err)
 				}
+				metadata.PkIndices = append(metadata.PkIndices, val)
 			}
 		}
 	}
@@ -340,9 +342,9 @@ func decodeColumnsMetadata(globalTableSpec bool, columnCount int32, source io.Re
 			return nil, fmt.Errorf("cannot read column col global table: %w", err)
 		}
 	}
-	cols = make([]*ColumnMetadata, columnCount)
+	cols = make([]*ColumnMetadata, 0)
 	for i := 0; i < int(columnCount); i++ {
-		cols[i] = &ColumnMetadata{}
+		cols = append(cols, &ColumnMetadata{})
 		if globalTableSpec {
 			cols[i].Keyspace = globalKsName
 		} else {

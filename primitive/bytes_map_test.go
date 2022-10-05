@@ -77,7 +77,7 @@ func TestReadBytesMap(t *testing.T) {
 			[]byte{},
 			fmt.Errorf(
 				"cannot read [bytes map] entry 0 key: %w",
-				fmt.Errorf("cannot read [string] content: %w", errors.New("unexpected EOF")),
+				fmt.Errorf("cannot read [string] content: %w", errors.New("EOF")),
 			),
 		},
 		{
@@ -98,7 +98,7 @@ func TestReadBytesMap(t *testing.T) {
 			[]byte{},
 			fmt.Errorf(
 				"cannot read [bytes map] entry 0 value: %w",
-				fmt.Errorf("cannot read [bytes] content: %w", errors.New("unexpected EOF")),
+				fmt.Errorf("cannot read [bytes] content: %w", errors.New("EOF")),
 			),
 		},
 	}

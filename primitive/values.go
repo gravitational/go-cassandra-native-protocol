@@ -15,6 +15,7 @@
 package primitive
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -68,11 +69,11 @@ func ReadValue(source io.Reader, version ProtocolVersion) (*Value, error) {
 	} else if length == 0 {
 		return NewValue([]byte{}), nil
 	} else {
-		decoded := make([]byte, length)
-		if _, err := io.ReadFull(source, decoded); err != nil {
+		var out bytes.Buffer
+		if _, err := io.CopyN(&out, source, int64(length)); err != nil {
 			return nil, fmt.Errorf("cannot read [value] content: %w", err)
 		}
-		return NewValue(decoded), nil
+		return NewValue(out.Bytes()), nil
 	}
 }
 
@@ -129,12 +130,12 @@ func ReadPositionalValues(source io.Reader, version ProtocolVersion) ([]*Value, 
 	if length, err := ReadShort(source); err != nil {
 		return nil, fmt.Errorf("cannot read positional [value]s length: %w", err)
 	} else {
-		decoded := make([]*Value, length)
+		decoded := make([]*Value, 0, length)
 		for i := uint16(0); i < length; i++ {
 			if value, err := ReadValue(source, version); err != nil {
 				return nil, fmt.Errorf("cannot read positional [value]s element %d content: %w", i, err)
 			} else {
-				decoded[i] = value
+				decoded = append(decoded, value)
 			}
 		}
 		return decoded, nil

@@ -34,14 +34,14 @@ func ReadStringList(source io.Reader) (decoded []string, err error) {
 		return []string{}, nil
 	}
 
-	decoded = make([]string, length)
+	decoded = make([]string, 0, length)
 	for i := uint16(0); i < length; i++ {
 		var str string
 		str, err = ReadString(source)
 		if err != nil {
 			return nil, fmt.Errorf("cannot read [string list] element %d: %w", i, err)
 		}
-		decoded[i] = str
+		decoded = append(decoded, str)
 	}
 	return decoded, nil
 }

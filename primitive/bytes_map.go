@@ -25,7 +25,7 @@ func ReadBytesMap(source io.Reader) (map[string][]byte, error) {
 	if length, err := ReadShort(source); err != nil {
 		return nil, fmt.Errorf("cannot read [bytes map] length: %w", err)
 	} else {
-		decoded := make(map[string][]byte, length)
+		decoded := make(map[string][]byte)
 		for i := uint16(0); i < length; i++ {
 			if key, err := ReadString(source); err != nil {
 				return nil, fmt.Errorf("cannot read [bytes map] entry %d key: %w", i, err)

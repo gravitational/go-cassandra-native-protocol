@@ -112,7 +112,7 @@ func TestReadStringMultiMap(t *testing.T) {
 			[]byte{},
 			fmt.Errorf("cannot read [string multimap] entry 0 value: %w",
 				fmt.Errorf("cannot read [string list] element 0: %w",
-					fmt.Errorf("cannot read [string] content: %w", errors.New("unexpected EOF")))),
+					fmt.Errorf("cannot read [string] content: %w", errors.New("EOF")))),
 		},
 	}
 	for _, tt := range tests {

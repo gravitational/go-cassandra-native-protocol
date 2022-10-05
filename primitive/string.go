@@ -15,6 +15,7 @@
 package primitive
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -28,11 +29,11 @@ func ReadString(source io.Reader) (string, error) {
 	} else if length <= 0 {
 		return "", nil
 	} else {
-		decoded := make([]byte, length)
-		if _, err := io.ReadFull(source, decoded); err != nil {
+		var out bytes.Buffer
+		if _, err := io.CopyN(&out, source, int64(length)); err != nil {
 			return "", fmt.Errorf("cannot read [string] content: %w", err)
 		}
-		return string(decoded), nil
+		return out.String(), nil
 	}
 }
 

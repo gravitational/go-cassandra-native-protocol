@@ -38,7 +38,7 @@ func ReadReasonMap(source io.Reader) ([]*FailureReason, error) {
 	if length, err := ReadInt(source); err != nil {
 		return nil, fmt.Errorf("cannot read reason map length: %w", err)
 	} else {
-		reasonMap := make([]*FailureReason, length)
+		reasonMap := make([]*FailureReason, 0)
 		for i := 0; i < int(length); i++ {
 			if addr, err := ReadInetAddr(source); err != nil {
 				return nil, fmt.Errorf("cannot read reason map key for element %d: %w", i, err)
@@ -47,7 +47,7 @@ func ReadReasonMap(source io.Reader) ([]*FailureReason, error) {
 			} else if err := CheckValidFailureCode(FailureCode(code)); err != nil {
 				return nil, err
 			} else {
-				reasonMap[i] = &FailureReason{addr, FailureCode(code)}
+				reasonMap = append(reasonMap, &FailureReason{addr, FailureCode(code)})
 			}
 		}
 		return reasonMap, err
