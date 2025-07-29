@@ -293,12 +293,10 @@ func (c *CqlClientConnection) outgoingLoop() {
 					abort = c.writeFrame(outgoing, c.conn)
 				}
 			case <-c.ctx.Done():
-				log.Error().Msgf("%v: outgoing frame channel was closed unexpectedly, closing connection", c)
-				abort = true
-
 			}
 		}
 		c.waitGroup.Done()
+		log.Debug().Msgf("%v: stopping listening for outgoing frames", c)
 		if abort {
 			c.abort()
 		}

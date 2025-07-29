@@ -504,11 +504,10 @@ func (c *CqlServerConnection) outgoingLoop() {
 					}
 				}
 			case <-c.ctx.Done():
-				log.Error().Msgf("%v: outgoing frame channel was closed unexpectedly, closing connection", c)
-				abort = true
 			}
 		}
 		c.waitGroup.Done()
+		log.Debug().Msgf("%v: stopping listening for outgoing frames", c)
 		if abort {
 			c.abort()
 		}
@@ -754,6 +753,7 @@ func (c *CqlServerConnection) Receive() (*frame.Frame, error) {
 	log.Debug().Msgf("%v: waiting for incoming frame", c)
 	select {
 	case incoming := <-c.incoming:
+		log.Debug().Msgf("%v: incoming frame successfully received: %v", c, incoming)
 		return incoming, nil
 	case <-c.ctx.Done():
 		return nil, fmt.Errorf("%v: connection closed", c)
