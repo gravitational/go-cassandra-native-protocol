@@ -16,12 +16,15 @@ package client_test
 
 import (
 	"context"
+	"testing"
+	"time"
+
 	"github.com/datastax/go-cassandra-native-protocol/client"
+	"github.com/datastax/go-cassandra-native-protocol/frame"
+	"github.com/datastax/go-cassandra-native-protocol/message"
 	"github.com/datastax/go-cassandra-native-protocol/primitive"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
-	"time"
 )
 
 func TestCqlServer_Accept(t *testing.T) {
@@ -220,4 +223,44 @@ func TestCqlServer_BindAndInit(t *testing.T) {
 	assert.Eventually(t, serverConn1.IsClosed, time.Second*10, time.Millisecond*10)
 	assert.Eventually(t, serverConn2.IsClosed, time.Second*10, time.Millisecond*10)
 	assert.Eventually(t, server.IsClosed, time.Second*10, time.Millisecond*10)
+}
+
+// TestCqlConnectionRace ensures there is no data race and invalid memory access
+// during the server and client connections teardown.
+//
+// Run with this test with data race detector enabled.
+// Example: `go test ./client/ -race -count=100 -run=TestCqlConnectionRace`
+func TestCqlConnectionRace(t *testing.T) {
+	srv := client.NewCqlServer("127.0.0.1:9043", nil)
+	t.Cleanup(func() {
+		srv.Close()
+	})
+	clt := client.NewCqlClient("127.0.0.1:9043", nil)
+
+	require.NoError(t, srv.Start(t.Context()))
+
+	// Connect to the server and start the incomingLoop and outgoingLoop.
+	conn, srvConn, err := srv.BindAndInit(clt, t.Context(), primitive.ProtocolVersion4, client.ManagedStreamId)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		conn.Close()
+		srvConn.Close()
+	})
+
+	// Perform a send to guarantee the loops are already running.
+	_, err = conn.Send(frame.NewFrame(
+		primitive.ProtocolVersion4,
+		client.ManagedStreamId,
+		&message.Query{
+			Query:   "SELECT * FROM system.local",
+			Options: &message.QueryOptions{},
+		},
+	))
+	require.NoError(t, err)
+
+	// Close the server connection, this will cause the client loops to abort
+	// and clean up resources. This is where it will usually trigger a data race
+	// as both connections still using some of the channels.
+	require.NoError(t, srv.Close())
+	require.NoError(t, srvConn.Close())
 }

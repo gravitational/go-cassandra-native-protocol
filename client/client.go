@@ -283,13 +283,8 @@ func (c *CqlClientConnection) outgoingLoop() {
 	go func() {
 		abort := false
 		for !abort && !c.IsClosed() {
-			if outgoing, ok := <-c.outgoing; !ok {
-				if !c.IsClosed() {
-					log.Error().Msgf("%v: outgoing frame channel was closed unexpectedly, closing connection", c)
-					abort = true
-				}
-				break
-			} else {
+			select {
+			case outgoing := <-c.outgoing:
 				log.Debug().Msgf("%v: sending outgoing frame: %v", c, outgoing)
 				if c.modernLayout {
 					// TODO write coalescer
@@ -297,9 +292,11 @@ func (c *CqlClientConnection) outgoingLoop() {
 				} else {
 					abort = c.writeFrame(outgoing, c.conn)
 				}
+			case <-c.ctx.Done():
 			}
 		}
 		c.waitGroup.Done()
+		log.Debug().Msgf("%v: stopping listening for outgoing frames", c)
 		if abort {
 			c.abort()
 		}
@@ -580,11 +577,10 @@ func (c *CqlClientConnection) ReceiveEvent() (*frame.Frame, error) {
 		return nil, fmt.Errorf("%v: connection closed", c)
 	}
 	select {
-	case incoming, ok := <-c.events:
-		if !ok {
-			return nil, fmt.Errorf("%v: incoming events channel closed", c)
-		}
+	case incoming := <-c.events:
 		return incoming, nil
+	case <-c.ctx.Done():
+		return nil, fmt.Errorf("%v: connection closed", c)
 	case <-time.After(c.readTimeout):
 		return nil, fmt.Errorf("%v: timed out waiting for incoming events", c)
 	}
@@ -603,8 +599,6 @@ func (c *CqlClientConnection) Close() (err error) {
 		log.Debug().Msgf("%v: closing", c)
 		c.cancel()
 		err = c.conn.Close()
-		close(c.outgoing)
-		close(c.events)
 		c.inFlightHandler.close()
 		c.waitGroup.Wait()
 		if err != nil {
