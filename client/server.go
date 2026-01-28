@@ -177,8 +177,20 @@ func (server *CqlServer) Start(ctx context.Context) (err error) {
 		}
 		server.ctx, server.cancel = context.WithCancel(ctx)
 		server.waitGroup = &sync.WaitGroup{}
-		server.acceptLoop()
-		server.awaitDone()
+		// We must ensure the waitGroup counter is added before the goroutines
+		// start given that they use `abort` function, which performs `wg.Wait`
+		// call (leading to potential data races).
+		server.waitGroup.Add(2)
+		go func() {
+			server.acceptLoop()
+			server.waitGroup.Done()
+			server.abort()
+		}()
+		go func() {
+			server.awaitDone()
+			server.waitGroup.Done()
+			server.abort()
+		}()
 		log.Info().Msgf("%v: successfully started", server)
 	} else {
 		log.Debug().Msgf("%v: already started or closed", server)
@@ -213,53 +225,41 @@ func (server *CqlServer) abort() {
 }
 
 func (server *CqlServer) acceptLoop() {
-	server.waitGroup.Add(1)
-	go func() {
-		abort := false
-		for server.IsRunning() {
-			if conn, err := server.Listener.Accept(); err != nil {
-				if !server.IsClosed() {
-					log.Error().Err(err).Msgf("%v: error accepting client connections, closing server", server)
-					abort = true
-				}
-				break
+	abort := false
+	for server.IsRunning() && !abort {
+		if conn, err := server.Listener.Accept(); err != nil {
+			if !server.IsClosed() {
+				log.Error().Err(err).Msgf("%v: error accepting client connections, closing server", server)
+				abort = true
+			}
+			break
+		} else {
+			log.Debug().Msgf("%v: new TCP connection accepted", server)
+			if connection, err := newCqlServerConnection(
+				conn,
+				server.ctx,
+				server.Credentials,
+				server.MaxInFlight,
+				server.IdleTimeout,
+				server.RequestHandlers,
+				server.RequestRawHandlers,
+				server.connectionsHandler.onConnectionClosed,
+			); err != nil {
+				log.Error().Msgf("%v: failed to accept incoming CQL client connection: %v", server, connection)
+				_ = conn.Close()
+			} else if err := server.connectionsHandler.onConnectionAccepted(connection); err != nil {
+				log.Error().Msgf("%v: handler rejected incoming CQL client connection: %v", server, connection)
+				_ = conn.Close()
 			} else {
-				log.Debug().Msgf("%v: new TCP connection accepted", server)
-				if connection, err := newCqlServerConnection(
-					conn,
-					server.ctx,
-					server.Credentials,
-					server.MaxInFlight,
-					server.IdleTimeout,
-					server.RequestHandlers,
-					server.RequestRawHandlers,
-					server.connectionsHandler.onConnectionClosed,
-				); err != nil {
-					log.Error().Msgf("%v: failed to accept incoming CQL client connection: %v", server, connection)
-					_ = conn.Close()
-				} else if err := server.connectionsHandler.onConnectionAccepted(connection); err != nil {
-					log.Error().Msgf("%v: handler rejected incoming CQL client connection: %v", server, connection)
-					_ = conn.Close()
-				} else {
-					log.Info().Msgf("%v: accepted new incoming CQL client connection: %v", server, connection)
-				}
+				log.Info().Msgf("%v: accepted new incoming CQL client connection: %v", server, connection)
 			}
 		}
-		server.waitGroup.Done()
-		if abort {
-			server.abort()
-		}
-	}()
+	}
 }
 
 func (server *CqlServer) awaitDone() {
-	server.waitGroup.Add(1)
-	go func() {
-		<-server.ctx.Done()
-		log.Debug().Err(server.ctx.Err()).Msgf("%v: context was closed", server)
-		server.waitGroup.Done()
-		server.abort()
-	}()
+	<-server.ctx.Done()
+	log.Debug().Err(server.ctx.Err()).Msgf("%v: context was closed", server)
 }
 
 // Accept waits until the given client address is accepted, the configured timeout is triggered, or the server is
@@ -425,9 +425,30 @@ func newCqlServerConnection(
 		connection.handlerCtx[i] = requestHandlerContext{}
 	}
 	connection.ctx, connection.cancel = context.WithCancel(ctx)
-	connection.incomingLoop()
-	connection.outgoingLoop()
-	connection.awaitDone()
+
+	// Ensure the wait group counter is set before starting the goroutines since
+	// they can abort the connection, causing wg.Wait() to be called before all
+	// wg.Add were called (leading to a data race).
+	//
+	// We cannot use wg.Go given that the abort call must only happen after
+	// wg.Done is called.
+	connection.waitGroup.Add(3)
+	go func() {
+		connection.incomingLoop()
+		connection.waitGroup.Done()
+		connection.abort()
+	}()
+	go func() {
+		connection.outgoingLoop()
+		connection.waitGroup.Done()
+		connection.abort()
+	}()
+	go func() {
+		connection.awaitDone()
+		connection.waitGroup.Done()
+		connection.abort()
+	}()
+
 	return connection, nil
 }
 
@@ -459,59 +480,45 @@ func (c *CqlServerConnection) GetConn() net.Conn {
 
 func (c *CqlServerConnection) incomingLoop() {
 	log.Debug().Msgf("%v: listening for incoming frames...", c)
-	c.waitGroup.Add(1)
-	go func() {
-		abort := false
-		for !abort && !c.IsClosed() {
-			if abort = c.setIdleTimeout(); !abort {
-				if source, err := c.waitForIncomingData(); err != nil {
-					abort = c.reportConnectionFailure(err, true)
-				} else if c.modernLayout {
-					abort = c.readSegment(source)
-				} else {
-					abort = c.readFrame(source)
-				}
+	abort := false
+	for !abort && !c.IsClosed() {
+		if abort = c.setIdleTimeout(); !abort {
+			if source, err := c.waitForIncomingData(); err != nil {
+				abort = c.reportConnectionFailure(err, true)
+			} else if c.modernLayout {
+				abort = c.readSegment(source)
+			} else {
+				abort = c.readFrame(source)
 			}
 		}
-		c.waitGroup.Done()
-		if abort {
-			c.abort()
-		}
-	}()
+	}
 }
 
 func (c *CqlServerConnection) outgoingLoop() {
 	log.Debug().Msgf("%v: listening for outgoing frames...", c)
-	c.waitGroup.Add(1)
-	go func() {
-		abort := false
-		for !c.IsClosed() {
-			select {
-			case outgoing := <-c.outgoing:
-				if outgoing.rawResponse != nil {
-					abort = c.writeRawResponse(outgoing.rawResponse, c.conn)
-					log.Debug().Msgf("%v: sending outgoing raw response: %v", c, outgoing.rawResponse)
-				} else {
-					if c.compression != primitive.CompressionNone {
-						outgoing.responseFrame.Header.Flags = outgoing.responseFrame.Header.Flags.Add(primitive.HeaderFlagCompressed)
-					}
-					log.Debug().Msgf("%v: sending outgoing frame: %v", c, outgoing.responseFrame)
-					if c.modernLayout {
-						// TODO write coalescer
-						abort = c.writeSegment(outgoing.responseFrame, c.conn)
-					} else {
-						abort = c.writeFrame(outgoing.responseFrame, c.conn)
-					}
+	abort := false
+	for !abort && !c.IsClosed() {
+		select {
+		case outgoing := <-c.outgoing:
+			if outgoing.rawResponse != nil {
+				abort = c.writeRawResponse(outgoing.rawResponse, c.conn)
+				log.Debug().Msgf("%v: sending outgoing raw response: %v", c, outgoing.rawResponse)
+			} else {
+				if c.compression != primitive.CompressionNone {
+					outgoing.responseFrame.Header.Flags = outgoing.responseFrame.Header.Flags.Add(primitive.HeaderFlagCompressed)
 				}
-			case <-c.ctx.Done():
+				log.Debug().Msgf("%v: sending outgoing frame: %v", c, outgoing.responseFrame)
+				if c.modernLayout {
+					// TODO write coalescer
+					abort = c.writeSegment(outgoing.responseFrame, c.conn)
+				} else {
+					abort = c.writeFrame(outgoing.responseFrame, c.conn)
+				}
 			}
+		case <-c.ctx.Done():
 		}
-		c.waitGroup.Done()
-		log.Debug().Msgf("%v: stopping listening for outgoing frames", c)
-		if abort {
-			c.abort()
-		}
-	}()
+	}
+	log.Debug().Msgf("%v: stopping listening for outgoing frames", c)
 }
 
 func (c *CqlServerConnection) waitForIncomingData() (io.Reader, error) {
@@ -666,52 +673,43 @@ func (c *CqlServerConnection) processIncomingFrame(incoming *frame.Frame) {
 		log.Error().Msgf("%v: incoming frames queue is full, discarding frame: %v", c, incoming)
 	}
 	if len(c.handlers) > 0 {
-		c.invokeRequestHandlers(incoming)
+		c.waitGroup.Go(func() { c.invokeRequestHandlers(incoming) })
 	}
 }
 
 func (c *CqlServerConnection) awaitDone() {
-	c.waitGroup.Add(1)
-	go func() {
-		<-c.ctx.Done()
-		log.Debug().Err(c.ctx.Err()).Msgf("%v: context was closed", c)
-		c.waitGroup.Done()
-		c.abort()
-	}()
+	<-c.ctx.Done()
+	log.Debug().Err(c.ctx.Err()).Msgf("%v: context was closed", c)
 }
 
 func (c *CqlServerConnection) invokeRequestHandlers(request *frame.Frame) {
-	c.waitGroup.Add(1)
-	go func() {
-		log.Debug().Msgf("%v: invoking request handlers for incoming request: %v", c, request)
-		var err error
-		var rawResponse []byte
-		for i, rawHandler := range c.rawHandlers {
-			if rawResponse = rawHandler(request, c, c.handlerCtx[i]); rawResponse != nil {
-				log.Debug().Msgf("%v: raw request handler %v produced response: %v", c, i, rawResponse)
-				if err = c.SendRaw(rawResponse); err != nil {
-					log.Error().Err(err).Msgf("%v: send failed for frame: %v", c, rawResponse)
+	log.Debug().Msgf("%v: invoking request handlers for incoming request: %v", c, request)
+	var err error
+	var rawResponse []byte
+	for i, rawHandler := range c.rawHandlers {
+		if rawResponse = rawHandler(request, c, c.handlerCtx[i]); rawResponse != nil {
+			log.Debug().Msgf("%v: raw request handler %v produced response: %v", c, i, rawResponse)
+			if err = c.SendRaw(rawResponse); err != nil {
+				log.Error().Err(err).Msgf("%v: send failed for frame: %v", c, rawResponse)
+			}
+			break
+		}
+	}
+	if rawResponse == nil {
+		var response *frame.Frame
+		for i, handler := range c.handlers {
+			if response = handler(request, c, c.handlerCtx[i]); response != nil {
+				log.Debug().Msgf("%v: request handler %v produced response: %v", c, i, response)
+				if err = c.Send(response); err != nil {
+					log.Error().Err(err).Msgf("%v: send failed for frame: %v", c, response)
 				}
 				break
 			}
 		}
-		if rawResponse == nil {
-			var response *frame.Frame
-			for i, handler := range c.handlers {
-				if response = handler(request, c, c.handlerCtx[i]); response != nil {
-					log.Debug().Msgf("%v: request handler %v produced response: %v", c, i, response)
-					if err = c.Send(response); err != nil {
-						log.Error().Err(err).Msgf("%v: send failed for frame: %v", c, response)
-					}
-					break
-				}
-			}
-			if response == nil {
-				log.Debug().Msgf("%v: no request handler could handle the request: %v", c, request)
-			}
+		if response == nil {
+			log.Debug().Msgf("%v: no request handler could handle the request: %v", c, request)
 		}
-		c.waitGroup.Done()
-	}()
+	}
 }
 
 // Send sends the given response frame.

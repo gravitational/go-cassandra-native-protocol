@@ -12,14 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package client_test
+package client
 
 import (
 	"context"
+	"errors"
+	"net"
 	"testing"
 	"time"
 
-	"github.com/datastax/go-cassandra-native-protocol/client"
+	// "github.com/datastax/go-cassandra-native-protocol/client"
 	"github.com/datastax/go-cassandra-native-protocol/frame"
 	"github.com/datastax/go-cassandra-native-protocol/message"
 	"github.com/datastax/go-cassandra-native-protocol/primitive"
@@ -29,10 +31,10 @@ import (
 
 func TestCqlServer_Accept(t *testing.T) {
 
-	server := client.NewCqlServer("127.0.0.1:9043", nil)
+	server := NewCqlServer("127.0.0.1:9043", nil)
 
-	clt1 := client.NewCqlClient("127.0.0.1:9043", nil)
-	clt2 := client.NewCqlClient("127.0.0.1:9043", nil)
+	clt1 := NewCqlClient("127.0.0.1:9043", nil)
+	clt2 := NewCqlClient("127.0.0.1:9043", nil)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 
@@ -71,10 +73,10 @@ func TestCqlServer_Accept(t *testing.T) {
 
 func TestCqlServer_AcceptAny(t *testing.T) {
 
-	server := client.NewCqlServer("127.0.0.1:9043", nil)
+	server := NewCqlServer("127.0.0.1:9043", nil)
 
-	clt1 := client.NewCqlClient("127.0.0.1:9043", nil)
-	clt2 := client.NewCqlClient("127.0.0.1:9043", nil)
+	clt1 := NewCqlClient("127.0.0.1:9043", nil)
+	clt2 := NewCqlClient("127.0.0.1:9043", nil)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 
@@ -113,10 +115,10 @@ func TestCqlServer_AcceptAny(t *testing.T) {
 
 func TestCqlServer_AllAcceptedClients(t *testing.T) {
 
-	server := client.NewCqlServer("127.0.0.1:9043", nil)
+	server := NewCqlServer("127.0.0.1:9043", nil)
 
-	clt1 := client.NewCqlClient("127.0.0.1:9043", nil)
-	clt2 := client.NewCqlClient("127.0.0.1:9043", nil)
+	clt1 := NewCqlClient("127.0.0.1:9043", nil)
+	clt2 := NewCqlClient("127.0.0.1:9043", nil)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 
@@ -155,10 +157,10 @@ func TestCqlServer_AllAcceptedClients(t *testing.T) {
 
 func TestCqlServer_Bind(t *testing.T) {
 
-	server := client.NewCqlServer("127.0.0.1:9043", nil)
+	server := NewCqlServer("127.0.0.1:9043", nil)
 
-	clt1 := client.NewCqlClient("127.0.0.1:9043", nil)
-	clt2 := client.NewCqlClient("127.0.0.1:9043", nil)
+	clt1 := NewCqlClient("127.0.0.1:9043", nil)
+	clt2 := NewCqlClient("127.0.0.1:9043", nil)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 
@@ -191,17 +193,17 @@ func TestCqlServer_Bind(t *testing.T) {
 
 func TestCqlServer_BindAndInit(t *testing.T) {
 
-	server := client.NewCqlServer("127.0.0.1:9043", nil)
+	server := NewCqlServer("127.0.0.1:9043", nil)
 
-	clt1 := client.NewCqlClient("127.0.0.1:9043", nil)
-	clt2 := client.NewCqlClient("127.0.0.1:9043", nil)
+	clt1 := NewCqlClient("127.0.0.1:9043", nil)
+	clt2 := NewCqlClient("127.0.0.1:9043", nil)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 
 	err := server.Start(ctx)
 	require.NoError(t, err)
 
-	clientConn1, serverConn1, err := server.BindAndInit(clt1, ctx, primitive.ProtocolVersion4, client.ManagedStreamId)
+	clientConn1, serverConn1, err := server.BindAndInit(clt1, ctx, primitive.ProtocolVersion4, ManagedStreamId)
 	require.NoError(t, err)
 	require.NotNil(t, clientConn1)
 	require.NotNil(t, serverConn1)
@@ -231,16 +233,16 @@ func TestCqlServer_BindAndInit(t *testing.T) {
 // Run with this test with data race detector enabled.
 // Example: `go test ./client/ -race -count=100 -run=TestCqlConnectionRace`
 func TestCqlConnectionRace(t *testing.T) {
-	srv := client.NewCqlServer("127.0.0.1:9043", nil)
+	srv := NewCqlServer("127.0.0.1:9043", nil)
 	t.Cleanup(func() {
 		srv.Close()
 	})
-	clt := client.NewCqlClient("127.0.0.1:9043", nil)
+	clt := NewCqlClient("127.0.0.1:9043", nil)
 
 	require.NoError(t, srv.Start(t.Context()))
 
 	// Connect to the server and start the incomingLoop and outgoingLoop.
-	conn, srvConn, err := srv.BindAndInit(clt, t.Context(), primitive.ProtocolVersion4, client.ManagedStreamId)
+	conn, srvConn, err := srv.BindAndInit(clt, t.Context(), primitive.ProtocolVersion4, ManagedStreamId)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		conn.Close()
@@ -250,7 +252,7 @@ func TestCqlConnectionRace(t *testing.T) {
 	// Perform a send to guarantee the loops are already running.
 	_, err = conn.Send(frame.NewFrame(
 		primitive.ProtocolVersion4,
-		client.ManagedStreamId,
+		ManagedStreamId,
 		&message.Query{
 			Query:   "SELECT * FROM system.local",
 			Options: &message.QueryOptions{},
@@ -263,4 +265,68 @@ func TestCqlConnectionRace(t *testing.T) {
 	// as both connections still using some of the channels.
 	require.NoError(t, srv.Close())
 	require.NoError(t, srvConn.Close())
+}
+
+// TestNewCqlServerConnectionRace ensures there is no data race during the
+// server connection setup.
+//
+// Run with: go test -race -count=10000 -run TestNewCqlServerConnectionRace
+func TestNewCqlServerConnectionRace(t *testing.T) {
+	conn := &failingConn{}
+
+	serverConn, err := newCqlServerConnection(
+		conn,
+		t.Context(),
+		nil, /* credentials */
+		128,
+		time.Hour,
+		nil, /* rawHandlers */
+		nil, /* onClose */
+		func(*CqlServerConnection) {},
+	)
+	if err != nil {
+		// Connection creation might fail, that's expected
+		return
+	}
+	if serverConn != nil {
+		_ = serverConn.Close()
+	}
+}
+
+// failingConn is a net.Conn that fails immediately on read operations.
+// This represents a connection that fails during the initial handshake.
+type failingConn struct {
+	net.Conn
+}
+
+func (f *failingConn) Read(b []byte) (n int, err error) {
+	return 0, errors.New("connection failure")
+}
+
+func (f *failingConn) Write(b []byte) (n int, err error) {
+	return len(b), nil
+}
+
+func (f *failingConn) Close() error {
+	return nil
+}
+
+func (f *failingConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9042}
+}
+
+func (f *failingConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 12345}
+}
+
+func (f *failingConn) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (f *failingConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (f *failingConn) SetWriteDeadline(t time.Time) error {
+	return nil
 }
