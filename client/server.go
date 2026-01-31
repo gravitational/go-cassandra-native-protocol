@@ -115,11 +115,12 @@ type CqlServer struct {
 	connectionsHandler *clientConnectionHandler
 	waitGroup          *sync.WaitGroup
 	state              int32
+	abort              func() error
 }
 
 // NewCqlServer creates a new CqlServer with default options. Leave credentials nil to opt out from authentication.
 func NewCqlServer(listenAddress string, credentials *AuthCredentials) *CqlServer {
-	return &CqlServer{
+	srv := &CqlServer{
 		ListenAddress:  listenAddress,
 		Credentials:    credentials,
 		MaxConnections: DefaultMaxConnections,
@@ -127,6 +128,14 @@ func NewCqlServer(listenAddress string, credentials *AuthCredentials) *CqlServer
 		AcceptTimeout:  DefaultAcceptTimeout,
 		IdleTimeout:    DefaultIdleTimeout,
 	}
+	srv.abort = sync.OnceValue(func() error {
+		srv.transitionState(ServerStateRunning, ServerStateClosed)
+		err := srv.Listener.Close()
+		srv.connectionsHandler.close()
+		srv.cancel()
+		return err
+	})
+	return srv
 }
 
 func (server *CqlServer) String() string {
@@ -177,20 +186,8 @@ func (server *CqlServer) Start(ctx context.Context) (err error) {
 		}
 		server.ctx, server.cancel = context.WithCancel(ctx)
 		server.waitGroup = &sync.WaitGroup{}
-		// We must ensure the waitGroup counter is added before the goroutines
-		// start given that they use `abort` function, which performs `wg.Wait`
-		// call (leading to potential data races).
-		server.waitGroup.Add(2)
-		go func() {
-			server.acceptLoop()
-			server.waitGroup.Done()
-			server.abort()
-		}()
-		go func() {
-			server.awaitDone()
-			server.waitGroup.Done()
-			server.abort()
-		}()
+		server.waitGroup.Go(server.acceptLoop)
+		server.waitGroup.Go(server.awaitDone)
 		log.Info().Msgf("%v: successfully started", server)
 	} else {
 		log.Debug().Msgf("%v: already started or closed", server)
@@ -199,29 +196,21 @@ func (server *CqlServer) Start(ctx context.Context) (err error) {
 }
 
 func (server *CqlServer) Close() (err error) {
-	if server.transitionState(ServerStateRunning, ServerStateClosed) {
-		log.Debug().Msgf("%v: closing", server)
-		err = server.Listener.Close()
-		server.connectionsHandler.close()
-		server.cancel()
-		server.waitGroup.Wait()
-		if err != nil {
-			log.Debug().Err(err).Msgf("%v: could not close server", server)
-			err = fmt.Errorf("%v: could not close server: %w", server, err)
-		} else {
-			log.Info().Msgf("%v: successfully closed", server)
-		}
-	} else {
+	if server.IsClosed() || server.IsNotStarted() {
 		log.Debug().Msgf("%v: not started or already closed", server)
+		return nil
+	}
+
+	log.Debug().Msgf("%v: closing", server)
+	err = server.abort()
+	server.waitGroup.Wait()
+	if err != nil {
+		log.Debug().Err(err).Msgf("%v: could not close server", server)
+		err = fmt.Errorf("%v: could not close server: %w", server, err)
+	} else {
+		log.Info().Msgf("%v: successfully closed", server)
 	}
 	return err
-}
-
-func (server *CqlServer) abort() {
-	log.Debug().Msgf("%v: forcefully closing", server)
-	if err := server.Close(); err != nil {
-		log.Error().Err(err).Msgf("%v: error closing", server)
-	}
 }
 
 func (server *CqlServer) acceptLoop() {
@@ -232,7 +221,6 @@ func (server *CqlServer) acceptLoop() {
 				log.Error().Err(err).Msgf("%v: error accepting client connections, closing server", server)
 				abort = true
 			}
-			break
 		} else {
 			log.Debug().Msgf("%v: new TCP connection accepted", server)
 			if connection, err := newCqlServerConnection(
@@ -255,10 +243,14 @@ func (server *CqlServer) acceptLoop() {
 			}
 		}
 	}
+	if abort {
+		_ = server.abort()
+	}
 }
 
 func (server *CqlServer) awaitDone() {
 	<-server.ctx.Done()
+	server.abort()
 	log.Debug().Err(server.ctx.Err()).Msgf("%v: context was closed", server)
 }
 
@@ -384,6 +376,7 @@ type CqlServerConnection struct {
 	ctx                context.Context
 	cancel             context.CancelFunc
 	payloadAccumulator *payloadAccumulator
+	abort              func() error
 }
 
 func newCqlServerConnection(
@@ -425,30 +418,17 @@ func newCqlServerConnection(
 		connection.handlerCtx[i] = requestHandlerContext{}
 	}
 	connection.ctx, connection.cancel = context.WithCancel(ctx)
+	connection.abort = sync.OnceValue(func() error {
+		connection.setClosed()
+		connection.cancel()
+		err := connection.conn.Close()
+		connection.onClose(connection)
+		return err
+	})
 
-	// Ensure the wait group counter is set before starting the goroutines since
-	// they can abort the connection, causing wg.Wait() to be called before all
-	// wg.Add were called (leading to a data race).
-	//
-	// We cannot use wg.Go given that the abort call must only happen after
-	// wg.Done is called.
-	connection.waitGroup.Add(3)
-	go func() {
-		connection.incomingLoop()
-		connection.waitGroup.Done()
-		connection.abort()
-	}()
-	go func() {
-		connection.outgoingLoop()
-		connection.waitGroup.Done()
-		connection.abort()
-	}()
-	go func() {
-		connection.awaitDone()
-		connection.waitGroup.Done()
-		connection.abort()
-	}()
-
+	connection.waitGroup.Go(connection.incomingLoop)
+	connection.waitGroup.Go(connection.outgoingLoop)
+	connection.waitGroup.Go(connection.awaitDone)
 	return connection, nil
 }
 
@@ -481,7 +461,7 @@ func (c *CqlServerConnection) GetConn() net.Conn {
 func (c *CqlServerConnection) incomingLoop() {
 	log.Debug().Msgf("%v: listening for incoming frames...", c)
 	abort := false
-	for !abort && !c.IsClosed() {
+	for !c.IsClosed() && !abort {
 		if abort = c.setIdleTimeout(); !abort {
 			if source, err := c.waitForIncomingData(); err != nil {
 				abort = c.reportConnectionFailure(err, true)
@@ -492,12 +472,15 @@ func (c *CqlServerConnection) incomingLoop() {
 			}
 		}
 	}
+	if abort {
+		_ = c.abort()
+	}
 }
 
 func (c *CqlServerConnection) outgoingLoop() {
 	log.Debug().Msgf("%v: listening for outgoing frames...", c)
 	abort := false
-	for !abort && !c.IsClosed() {
+	for !c.IsClosed() && !abort {
 		select {
 		case outgoing := <-c.outgoing:
 			if outgoing.rawResponse != nil {
@@ -519,6 +502,9 @@ func (c *CqlServerConnection) outgoingLoop() {
 		}
 	}
 	log.Debug().Msgf("%v: stopping listening for outgoing frames", c)
+	if abort {
+		c.abort()
+	}
 }
 
 func (c *CqlServerConnection) waitForIncomingData() (io.Reader, error) {
@@ -679,6 +665,7 @@ func (c *CqlServerConnection) processIncomingFrame(incoming *frame.Frame) {
 
 func (c *CqlServerConnection) awaitDone() {
 	<-c.ctx.Done()
+	c.abort()
 	log.Debug().Err(c.ctx.Err()).Msgf("%v: context was closed", c)
 }
 
@@ -767,28 +754,20 @@ func (c *CqlServerConnection) setClosed() bool {
 }
 
 func (c *CqlServerConnection) Close() (err error) {
-	if c.setClosed() {
-		log.Debug().Msgf("%v: closing", c)
-		c.cancel()
-		err = c.conn.Close()
-		c.waitGroup.Wait()
-		c.onClose(c)
-		if err != nil {
-			err = fmt.Errorf("%v: error closing: %w", c, err)
-		} else {
-			log.Info().Msgf("%v: successfully closed", c)
-		}
-	} else {
+	if c.IsClosed() {
 		log.Debug().Err(err).Msgf("%v: already closed", c)
+		return nil
+	}
+
+	log.Debug().Msgf("%v: closing", c)
+	err = c.abort()
+	c.waitGroup.Wait()
+	if err != nil {
+		err = fmt.Errorf("%v: error closing: %w", c, err)
+	} else {
+		log.Info().Msgf("%v: successfully closed", c)
 	}
 	return err
-}
-
-func (c *CqlServerConnection) abort() {
-	log.Debug().Msgf("%v: forcefully closing", c)
-	if err := c.Close(); err != nil {
-		log.Error().Err(err).Msgf("%v: error closing", c)
-	}
 }
 
 func init() {
