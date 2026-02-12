@@ -1,6 +1,6 @@
 module github.com/datastax/go-cassandra-native-protocol
 
-go 1.17
+go 1.25
 
 require (
 	github.com/golang/snappy v0.0.3
